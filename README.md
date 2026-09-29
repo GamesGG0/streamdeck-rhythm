@@ -1,6 +1,20 @@
 # streamdeck-rhythm
 
-A rhythm game for the Elgato Stream Deck+. Boxes grow on the keys, and you press a key when its box fills. It plays osu!mania 4K to 8K charts from your osu!lazer library, with osu!lazer's timing windows and scoring.
+A rhythm game for Elgato Stream Decks. Boxes grow on the keys, and you press a key when its box fills. It plays osu!mania 4K to 8K charts from your osu!lazer library, with osu!lazer's timing windows and scoring.
+
+It works with any Stream Deck that has screens on its keys, which is every model except the Stream Deck Pedal:
+
+| Stream Deck | Charts | How to stop a song early |
+|---|---|---|
+| Mini | 4K-6K | QUIT key (4K and 5K), or Ctrl+C |
+| Original / MK.2 | 4K-8K | QUIT key |
+| Neo | 4K-8K | Either touch button |
+| + (Plus) | 4K-8K | QUIT on the touch strip |
+| XL | 4K-8K | QUIT key |
+| + XL | 4K-8K | QUIT on the touch strip |
+| Studio | 4K-8K | QUIT key |
+
+It has been played on a Stream Deck+. The other models were tested with the Stream Deck library's simulated devices, not real hardware.
 
 ## Setup (Windows)
 
@@ -15,19 +29,14 @@ A rhythm game for the Elgato Stream Deck+. Boxes grow on the keys, and you press
 
 ## Playing
 
-- `Play.bat` lists the osu!mania 4K-8K charts in your osu!lazer library, and any `.osz` files in lazer's `exports` folder or in `maps\`.
+- `Play.bat` lists the osu!mania charts your Stream Deck has room for, from your osu!lazer library and any `.osz` files in lazer's `exports` folder or in `maps\`.
 - `Play Demo.bat` plays an easy random chart with a metronome.
-- The touch strip shows your last result, combo, accuracy and misses.
-- Tap QUIT on the touch strip three times to stop a song early.
+- To stop a song early, press QUIT 3 times in a row. Where QUIT is depends on the model (see the table above).
+- The Stream Deck+ and + XL show your last result, combo, accuracy and misses on the touch strip. The Neo shows them on its small screen.
 - When the song finishes, the keys show your stats, score and max combo. Press any key to finish.
 - Closing the window resets the Stream Deck.
 
-How lanes map to keys:
-
-| Keys | Layout |
-|---|---|
-| 4K | One lane per bottom-row key. The top row is grayed out. |
-| 5K-8K | The left half of the lanes are on the top row, the right half on the bottom row. Unused keys are gray. |
+How lanes map to keys: the lanes go on the bottom row, centered. If a chart has more lanes than the deck has columns, they split across the bottom two rows, left half on the upper row. Unused keys are gray.
 
 What the keys show:
 
@@ -47,3 +56,17 @@ Run `rhythm.py` directly for these:
 | `--od N` | Overrides the chart's OD. Lower is more forgiving. |
 | `--approach S` | How many seconds a box takes to fill. By default it follows the song's BPM. |
 | `--demo --keys N --easy` | A random chart with N lanes. |
+| `--deck N` | Which Stream Deck to use, if more than one is plugged in. |
+| `--debug` | Also prints how fast key images were sent. |
+
+## Code
+
+| File | What it does |
+|---|---|
+| `rhythm.py` | Gameplay, the song loop, the results screen and the command line |
+| `device.py` | Finds the Stream Deck, lays lanes out on its keys, resets it afterwards |
+| `render.py` | Draws the keys, the touch strip and the Neo's screen |
+| `scoring.py` | osu!lazer's mania judgements and scoring |
+| `osu.py` | Reads charts from `.osz` files and the osu!lazer library |
+| `lazer.py` | Reads osu!lazer's database to find charts and their songs |
+| `demo.py` | Random practice charts with a metronome |

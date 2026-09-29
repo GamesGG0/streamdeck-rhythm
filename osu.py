@@ -8,8 +8,6 @@ from dataclasses import dataclass
 
 import lazer
 
-SNAP_DIVISORS = (1, 2, 3, 4)
-SNAP_TOLERANCE_MS = 3
 HOLD_TYPE = 128
 
 
@@ -121,22 +119,6 @@ def red_points(sections):
     return sorted(points)
 
 
-def snap_of(time_ms, points):
-    if not points:
-        return 0
-    point = points[0]
-    for p in points:
-        if p[0] > time_ms + SNAP_TOLERANCE_MS:
-            break
-        point = p
-    beats = (time_ms - point[0]) / point[1]
-    for divisor in SNAP_DIVISORS:
-        ticks = beats * divisor
-        if abs(ticks - round(ticks)) * point[1] / divisor <= SNAP_TOLERANCE_MS:
-            return divisor
-    return 0
-
-
 def main_bpm(points, last_ms):
     """The BPM that lasts longest before the last note, which is what osu! shows as a map's BPM."""
     totals = {}
@@ -153,7 +135,7 @@ def main_bpm(points, last_ms):
 
 
 def load_chart(info):
-    """Returns (notes, audio_path, bpm) with notes as (lane, time, end, snap) in seconds."""
+    """Returns (notes, audio_path, bpm) with notes as (lane, time, end) in seconds; end is None for taps."""
     kind, path, extra = info.source
     if kind == "osz":
         with zipfile.ZipFile(path) as package:
@@ -172,7 +154,6 @@ def load_chart(info):
         audio_path = temp_audio_path(audio_filename(sections))
         shutil.copyfile(extra, audio_path)
 
-    points = red_points(sections)
     notes = []
     for line in sections.get("HitObjects", []):
         fields = line.split(",")
@@ -181,10 +162,10 @@ def load_chart(info):
         end = None
         if kind_bits & HOLD_TYPE:
             end = int(fields[5].split(":")[0]) / 1000
-        notes.append((lane, time_ms / 1000, end, snap_of(time_ms, points)))
+        notes.append((lane, time_ms / 1000, end))
     notes.sort(key=lambda n: n[1])
     last_ms = max((n[2] or n[1] for n in notes), default=0) * 1000
-    return notes, audio_path, main_bpm(points, last_ms)
+    return notes, audio_path, main_bpm(red_points(sections), last_ms)
 
 
 def temp_audio_path(filename):

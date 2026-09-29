@@ -1,78 +1,101 @@
 # streamdeck-rhythm
 
-A rhythm game for Elgato Stream Decks. Boxes grow on the keys, and you press a key when its box fills. It plays osu!mania 4K to 8K charts from your osu!lazer library, with osu!lazer's timing windows and scoring.
+A rhythm game for Elgato Stream Decks. A box grows on a key, and you press the key when the box fills up.
 
-It works with any Stream Deck that has screens on its keys, which is every model except the Stream Deck Pedal:
+It plays osu!mania songs from your osu!lazer game, and scores you the same way osu! does.
 
-| Stream Deck | Charts | How to stop a song early |
-|---|---|---|
-| Mini | 4K-6K | QUIT key (4K and 5K), or Ctrl+C |
-| Original / MK.2 | 4K-8K | QUIT key |
-| Neo | 4K-8K | Either touch button |
-| + (Plus) | 4K-8K | QUIT on the touch strip |
-| XL | 4K-8K | QUIT key |
-| + XL | 4K-8K | QUIT on the touch strip |
-| Studio | 4K-8K | QUIT key |
+## What you need
 
-It has been played on a Stream Deck+. The other models were tested with the Stream Deck library's simulated devices, not real hardware.
+- A Windows PC
+- Any Stream Deck with screens on its keys (every model except the Stream Deck Pedal)
+- [Python 3](https://www.python.org/downloads/)
+- osu!lazer with some osu!mania maps (optional, there's a practice mode without it)
 
-## Setup (Windows)
+## Setup
 
-1. Install Python 3 (tested with 3.14).
-2. In this folder, create a virtual environment and install the libraries:
+Do this once.
+
+1. Open a command prompt in this folder and run these two lines:
    ```
    python -m venv .venv
    .venv\Scripts\python -m pip install -r requirements.txt
    ```
-3. Download `hidapi-win.zip` from the [hidapi releases](https://github.com/libusb/hidapi/releases) and put its `x64\hidapi.dll` in this folder.
-4. Quit the Stream Deck app, so the game can take over the device.
+2. Download `hidapi-win.zip` from the [hidapi releases page](https://github.com/libusb/hidapi/releases). Open it, and copy `x64\hidapi.dll` into this folder.
 
 ## Playing
 
-- `Play.bat` lists the osu!mania charts your Stream Deck has room for, from your osu!lazer library and any `.osz` files in lazer's `exports` folder or in `maps\`.
-- `Play Demo.bat` plays an easy random chart with a metronome.
-- To stop a song early, press QUIT 3 times in a row. Where QUIT is depends on the model (see the table above).
-- The Stream Deck+ and + XL show your last result, combo, accuracy and misses on the touch strip. The Neo shows them on its small screen.
-- When the song finishes, the keys show your stats, score and max combo. Press any key to finish.
-- Closing the window resets the Stream Deck.
+1. Quit the Stream Deck app (right-click its icon by the clock, then Quit).
+2. Double-click **`Play.bat`** and type the number of a song.
+   Or double-click **`Play Demo.bat`** for an easy practice song.
+3. Press a key when its box fills up.
 
-How lanes map to keys: the lanes go on the bottom row, centered. If a chart has more lanes than the deck has columns, they split across the bottom two rows, left half on the upper row. Unused keys are gray.
+When the song ends, your stats show on the keys. Press any key to finish.
 
-What the keys show:
+## What you'll see
 
-- Tap notes are red boxes and hold notes are purple boxes, all outlined in white.
-- After you hit a hold note, the key fills purple and drains; let go when it's empty.
-- Boxes in front of a note are the next notes in that lane. From the back, stacked notes go bright, slightly dark, darker, then repeat, so each one stands apart. The note you're about to hit is always bright.
-- How fast boxes fill follows each song's BPM (1.5 beats). `--approach` overrides it.
-- Your result for each note fades out on its key. MISS is shown in red.
+| On the key | What it means |
+|---|---|
+| Red box | Tap the key when it's full |
+| Purple box | Hold the key when it's full, and let go when the purple bar runs out |
+| Smaller boxes on top | The next notes on that key |
+| Gray key | Not used in this song |
+| PERFECT, GREAT... | How well you hit the note (MISS is red) |
+
+## Controls
+
+| | How |
+|---|---|
+| Stop a song early | Press QUIT 3 times in a row (see below) |
+| Change the volume | Turn a dial (press it to mute), or start with a volume like `Play.bat --volume 50` |
+
+Where QUIT is:
+
+| Stream Deck | QUIT | Dials for volume |
+|---|---|---|
+| + and + XL | On the touch strip | Yes |
+| Neo | Either touch button | No |
+| Mini | A QUIT key (or Ctrl+C for 6-key songs) | No |
+| Original, MK.2, XL | A QUIT key in the top-right corner | No |
+| Studio | A QUIT key in the top-right corner | Yes |
+
+Volume starts at 80%.
 
 ## Options
 
-Run `rhythm.py` directly for these:
+Type these after `Play.bat` in a command prompt, for example `Play.bat --volume 50 --offset -15`.
 
 | Option | What it does |
 |---|---|
-| `--offset MS` | Shifts timing; the results suggest a value. |
-| `--od N` | Overrides the chart's OD. Lower is more forgiving. |
-| `--approach S` | How many seconds a box takes to fill. By default it follows the song's BPM. |
-| `--demo --keys N --easy` | A random chart with N lanes. |
-| `--deck N` | Which Stream Deck to use, if more than one is plugged in. |
-| `--debug` | Also prints how fast key images were sent. |
+| `--volume 50` | Music volume, from 0 to 100 |
+| `--offset -15` | Fixes timing if you're always early or late. After each song, the game suggests a number. |
+| `--od 0` | Makes timing more forgiving. Lower is easier. |
+| `--approach 0.8` | How many seconds a box takes to fill. Normally it matches the song's speed. |
+| `--deck 2` | Which Stream Deck to use, if you have more than one |
 
-## Code
+`Play Demo.bat` also takes `--keys 6`, for a practice song with that many lanes (4 to 8).
+
+## Good to know
+
+- It has been tested on a Stream Deck+. Other models were tested with simulated devices.
+- Closing the window resets the Stream Deck.
+- Songs that don't fit your Stream Deck aren't listed. The Mini fits up to 6 lanes, the rest up to 8.
+
+## For developers
 
 | File | What it does |
 |---|---|
-| `rhythm.py` | Gameplay, the song loop, the results screen and the command line |
-| `device.py` | Finds the Stream Deck, lays lanes out on its keys, resets it afterwards |
+| `rhythm.py` | Gameplay, the song loop, the results screen and the options |
+| `device.py` | Finds the Stream Deck and places lanes on its keys |
 | `render.py` | Draws the keys, the touch strip and the Neo's screen |
-| `scoring.py` | osu!lazer's mania judgements and scoring |
-| `osu.py` | Reads charts from `.osz` files and the osu!lazer library |
-| `lazer.py` | Reads osu!lazer's database to find charts and their songs |
-| `demo.py` | Random practice charts with a metronome |
+| `scoring.py` | osu!lazer's timing windows and scoring |
+| `osu.py` | Reads songs from `.osz` files and from osu!lazer |
+| `lazer.py` | Reads osu!lazer's database to find songs |
+| `demo.py` | The practice songs |
+
+`--debug` prints how fast images were sent to the keys.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The scoring is ported from osu!lazer, which is also MIT; its notice is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), along with the libraries the game uses.
+MIT, see [LICENSE](LICENSE). The scoring is based on osu!lazer's code, which is also MIT; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-This project isn't affiliated with or endorsed by ppy (osu!) or Elgato (Stream Deck).
+This project isn't made or endorsed by ppy (osu!) or Elgato (Stream Deck).

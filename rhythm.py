@@ -8,7 +8,7 @@ import time
 
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 import pygame
-from StreamDeck.Devices.StreamDeck import TouchscreenEventType
+from StreamDeck.Devices.StreamDeck import DialEventType, TouchscreenEventType
 
 import demo
 import device
@@ -28,6 +28,9 @@ APPROACH_MIN = 0.3
 APPROACH_MAX = 1.0
 DEFAULT_APPROACH = 0.5  # when a chart's BPM can't be worked out
 MAX_STACK = 4  # most notes shown at once on one key
+DEFAULT_VOLUME = 80  # percent
+VOLUME_STEP = 5  # percent per dial click
+VOLUME_SHOW_TIME = 1.5  # seconds the touch strip shows the volume after it changes
 
 EASINGS = {
     "linear": lambda p: p,
@@ -104,6 +107,10 @@ class Game:
         self.quit = False
         self.results_since = None
         self.results_done = False
+        self.volume = args.volume
+        self.muted = False
+        self.volume_changed_at = None
+        self.volume_applied = None
 
     def song_time(self, at=None):
         return (at or time.perf_counter()) - self.start - self.offset
@@ -147,6 +154,31 @@ class Game:
             self.dismiss_results(time.perf_counter())
         elif self.panel.hits_quit(value["x"]):
             self.quit_press(time.perf_counter())
+
+    def on_dial(self, deck, dial, event, value):
+        # Every dial controls the volume: turn to change it, press to mute
+        with self.lock:
+            if event == DialEventType.TURN:
+                self.volume = min(100, max(0, self.volume + value * VOLUME_STEP))
+                self.muted = False
+            elif event == DialEventType.PUSH and value:
+                self.muted = not self.muted
+            else:
+                return
+            self.volume_changed_at = time.perf_counter()
+
+    def apply_volume(self):
+        """Hands any volume change to the music player; returns the volume text if it just changed."""
+        with self.lock:
+            level = 0 if self.muted else self.volume
+            text = "Muted" if self.muted else f"Volume {self.volume}%"
+            recent = self.volume_changed_at is not None and time.perf_counter() - self.volume_changed_at < VOLUME_SHOW_TIME
+        if level != self.volume_applied:
+            pygame.mixer.music.set_volume(level / 100)
+            if self.volume_applied is not None and not self.panel:
+                print(text)
+            self.volume_applied = level
+        return text if recent else None
 
     def quit_press(self, now):
         with self.lock:
@@ -292,10 +324,12 @@ class Game:
         last = max(n.end or n.time for n in self.notes)
         lead = max(LEAD_IN, self.approach - self.notes[0].time + 0.5)
         pygame.mixer.music.load(audio_path)
+        self.apply_volume()
         self.start = time.perf_counter() + lead
         playing = False
         try:
             while True:
+                volume_text = self.apply_volume()
                 if not playing and time.perf_counter() >= self.start:
                     pygame.mixer.music.play()
                     playing = True
@@ -310,7 +344,9 @@ class Game:
                 self.update_keys(t)
                 if self.panel:
                     with self.lock:
-                        stats = (self.last_result or "READY", self.score.combo, self.score.accuracy * 100, self.score.counts[MISS])
+                        # A volume change briefly takes the place of the last result
+                        headline = volume_text or self.last_result or "READY"
+                        stats = (headline, self.score.combo, self.score.accuracy * 100, self.score.counts[MISS])
                     self.panel.show_stats(*stats, self.recent_quit_presses())
                 time.sleep(0.002)
         except KeyboardInterrupt:
@@ -428,6 +464,12 @@ def choose_chart(most_lanes):
             return notes, audio, chart.keys, chart.od, bpm
 
 
+def percent(text):
+    if not text.isdigit() or int(text) > 100:
+        raise argparse.ArgumentTypeError("must be a whole number from 0 to 100")
+    return int(text)
+
+
 def pick_deck(number):
     decks = device.find_decks()
     if not decks:
@@ -457,6 +499,8 @@ def main():
     parser.add_argument("--approach", type=float, help="seconds a box takes to fill; by default it follows the song's BPM")
     parser.add_argument("--easing", choices=EASINGS, default="linear")
     parser.add_argument("--offset", type=float, default=0, help="ms; raise it if you keep hitting late")
+    parser.add_argument("--volume", type=percent, default=DEFAULT_VOLUME, metavar="0-100",
+                        help=f"music volume in percent (default {DEFAULT_VOLUME}); decks with dials can change it while playing")
     parser.add_argument("--debug", action="store_true", help="also print how fast key images were sent")
     args = parser.parse_args()
 
@@ -487,8 +531,14 @@ def main():
         deck.set_key_callback(game.on_key)
         if deck.is_touch():
             deck.set_touchscreen_callback(game.on_touch)
+        if deck.dial_count():
+            deck.set_dial_callback(game.on_dial)
         print(f"{len(chart)} notes. {device.describe_layout(deck, game.layout, lanes)}")
         print(device.describe_quit(deck, game.layout))
+        if deck.dial_count():
+            print(f"Volume {args.volume}%: turn any dial to change it, press one to mute.")
+        else:
+            print(f"Volume {args.volume}%: start with --volume N to change it, e.g. Play.bat --volume 50")
         print(describe_windows(od))
         print(f"Note speed: boxes fill in {approach:.2f} s" + (f" ({bpm:g} BPM)" if bpm else ""))
         game.run(audio)

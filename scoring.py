@@ -1,4 +1,5 @@
 """osu!lazer mania judgements and scoring, ported from ppy/osu (default windows, no Classic mod)."""
+# ppy/osu is MIT licensed, Copyright (c) 2025 ppy Pty Ltd; see THIRD_PARTY_NOTICES.md
 
 import math
 

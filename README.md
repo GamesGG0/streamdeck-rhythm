@@ -70,3 +70,9 @@ Run `rhythm.py` directly for these:
 | `osu.py` | Reads charts from `.osz` files and the osu!lazer library |
 | `lazer.py` | Reads osu!lazer's database to find charts and their songs |
 | `demo.py` | Random practice charts with a metronome |
+
+## License
+
+MIT, see [LICENSE](LICENSE). The scoring is ported from osu!lazer, which is also MIT; its notice is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), along with the libraries the game uses.
+
+This project isn't affiliated with or endorsed by ppy (osu!) or Elgato (Stream Deck).

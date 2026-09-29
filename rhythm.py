@@ -2,6 +2,7 @@
 
 import argparse
 import array
+import ctypes
 import math
 import os
 import random
@@ -13,7 +14,7 @@ import wave
 
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 import pygame
-from PIL import ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 from StreamDeck.DeviceManager import DeviceManager
 from StreamDeck.Devices.StreamDeck import TouchscreenEventType
 from StreamDeck.ImageHelpers import PILHelper
@@ -30,7 +31,13 @@ KEY_COUNT = 8
 MIN_LANES = 4
 MAX_LANES = 8
 DEMO_OD = 5
-FLASH_TIME = 0.15
+RESULT_TEXT_TIME = 0.5  # how long a hit's result takes to fade off its key
+RESULT_TEXT_STEPS = 10  # fade frames; fewer means fewer images sent to the device
+RESULT_TEXT_SHRINK = 0.4  # the text ends this much smaller than it starts
+MISS_TEXT_COLOR = (235, 60, 60)
+TILE_LABEL_COLOR = (160, 160, 175)
+RESULTS_GRACE = 1.0  # seconds the stats ignore presses, so a late tap doesn't skip them
+CONSOLE_CLOSE_EVENTS = (2, 5, 6)  # window closed, logging off, shutting down
 EASY_MIN_GAP = 1 / 3  # easy demo: at most 3 notes per second
 EASY_MAX_GAP = 1.2  # and roughly at least 1
 LEAD_IN = 2.0
@@ -45,27 +52,23 @@ EASINGS = {
     "expo_out": lambda p: 1.0 if p >= 1 else 1 - 2 ** (-10 * p),
 }
 
-OUTLINE_COLOR = (70, 70, 90)
 UNUSED_COLOR = (45, 45, 52)  # keys a chart with fewer lanes doesn't use
 HOLD_COLOR = (190, 90, 255)
 LOOSE_HOLD_COLOR = (110, 110, 125)  # a hold you've let go of but can still grab
 QUIT_BUTTON = (630, 12, 788, 88)  # left, top, right, bottom on the touch strip
 QUIT_TAPS = 3
 QUIT_TAP_GAP = 0.6  # most seconds allowed between taps
-SNAP_COLORS = {1: (235, 70, 70), 2: (70, 140, 255), 3: (255, 110, 180), 4: (240, 200, 40)}
-OTHER_SNAP_COLOR = (150, 150, 160)
-SECOND_COLOR = (245, 245, 245)  # the next note in a lane, when it overlaps the current one
-SECOND_HOLD_COLOR = (225, 190, 255)
-SECOND_WIDTH = 4
+TAP_COLOR = (235, 70, 70)
+STACK_SHADES = (1.0, 0.75, 0.55)  # from the back of a stack: bright, slightly dark, darker, repeating
+APPROACH_BEATS = 1.5  # a box takes this many beats of the song's main BPM to fill
+APPROACH_MIN = 0.3
+APPROACH_MAX = 1.0
+DEFAULT_APPROACH = 0.5  # when a chart's BPM can't be worked out
+NOTE_BORDER_COLOR = (255, 255, 255)  # outlines every note box
+NOTE_BORDER_WIDTH = 2
+NOTE_CORNER_SHARE = 0.12  # corner radius as a share of the box's size, so corners grow with it
+MAX_STACK = 4  # most notes shown at once on one key
 SIZE_STEP = 4
-RESULT_COLORS = {
-    PERFECT: (150, 235, 255),
-    GREAT: (255, 215, 0),
-    GOOD: (80, 220, 120),
-    OK: (60, 140, 255),
-    MEH: (140, 140, 150),
-    MISS: (220, 50, 50),
-}
 
 
 class Note:
@@ -96,7 +99,7 @@ class Lane:
         self.first = 0  # notes before this index are done
         self.holding = None
         self.hold_key = None
-        self.flash = None  # (result, song time)
+        self.label = None  # (result, song time)
 
     def upcoming(self, count):
         found = []
@@ -114,8 +117,8 @@ class Lane:
 def key_layout(lanes):
     """Returns the lane each key plays (None if unused) and the key each lane's notes show on."""
     if lanes <= KEY_COLUMNS:
-        # One lane per column: notes show on the bottom row and either key hits
-        key_lane = [i if i < lanes else None for i in range(KEY_COLUMNS)] * 2
+        # One lane per bottom-row key; the top row sits out
+        key_lane = [None] * KEY_COLUMNS + [i if i < lanes else None for i in range(KEY_COLUMNS)]
         return key_lane, [KEY_COLUMNS + i for i in range(lanes)]
     # Left half of the lanes on the top row, right half on the bottom row
     top = (lanes + 1) // 2
@@ -130,9 +133,10 @@ def key_layout(lanes):
 
 def describe_layout(lanes):
     if lanes <= KEY_COLUMNS:
-        return f"{lanes}K: hit the bottom row (either key in a column works)."
-    top = (lanes + 1) // 2
-    text = f"{lanes}K: lanes 1-{top} are the top row, lanes {top + 1}-{lanes} the bottom row."
+        text = f"{lanes}K: play on the bottom row."
+    else:
+        top = (lanes + 1) // 2
+        text = f"{lanes}K: lanes 1-{top} are the top row, lanes {top + 1}-{lanes} the bottom row."
     if None in key_layout(lanes)[0]:
         text += " Gray keys aren't used."
     return text
@@ -202,8 +206,9 @@ def make_demo_audio(notes, bpm, length):
 
 
 class Game:
-    def __init__(self, deck, chart, lanes, od, args):
+    def __init__(self, deck, chart, lanes, od, approach, args):
         self.deck = deck
+        self.approach = approach
         self.notes = [Note(*n) for n in chart]
         self.lanes = [Lane([n for n in self.notes if n.lane == i]) for i in range(lanes)]
         self.key_lane, self.shown_key = key_layout(lanes)
@@ -211,7 +216,6 @@ class Game:
         self.windows = scoring.hit_windows(od)
         # Holds are judged twice: once on press, once on release
         self.score = scoring.ScoreKeeper(sum(2 if n.is_hold else 1 for n in self.notes))
-        self.approach = args.approach
         self.offset = args.offset / 1000
         self.ease = EASINGS[args.easing]
         self.start = None
@@ -223,16 +227,29 @@ class Game:
         self.key_writes = 0
         self.key_write_time = 0.0
         self.size = deck.key_image_format()["size"][0]
-        self.strip_font = ImageFont.load_default(size=40)
+        self.strip_font = ImageFont.load_default(size=38)
+        self.stats_font = ImageFont.load_default(size=26)
         self.button_font = ImageFont.load_default(size=28)
+        self.label_size = 30
+        # Shrink until the longest result fits across a key
+        while ImageFont.load_default(size=self.label_size).getlength(PERFECT) > self.size - 14:
+            self.label_size -= 1
+        self.label_fonts = {}
         self.quit_taps = []
         self.quit = False
+        self.tile_label_font = ImageFont.load_default(size=18)
+        self.results_since = None
+        self.results_done = False
 
     def song_time(self, at=None):
         return (at or time.perf_counter()) - self.start - self.offset
 
     def on_key(self, deck, key, pressed):
         stamp = time.perf_counter()
+        if self.results_since is not None:
+            if pressed:
+                self.dismiss_results(stamp)
+            return
         if self.start is None:
             return
         t = self.song_time(stamp)
@@ -303,7 +320,7 @@ class Game:
     def record(self, lane, result, t):
         self.score.add(result)
         self.last_result = result
-        lane.flash = (result, t)
+        lane.label = (result, t)
 
     def advance(self, t):
         with self.lock:
@@ -329,19 +346,20 @@ class Game:
         with self.lock:
             states = [("unused",) if lane is None else None for lane in self.key_lane]
             for lane, key in zip(self.lanes, self.shown_key):
-                flash = None
-                if lane.flash and t - lane.flash[1] < FLASH_TIME:
-                    flash = lane.flash[0]
-                note, following = lane.upcoming(2)
-                second = self.overlay(following, t)
+                label = None
+                if lane.label and t - lane.label[1] < RESULT_TEXT_TIME:
+                    fade = max(0.0, t - lane.label[1]) / RESULT_TEXT_TIME
+                    label = (lane.label[0], int(fade * RESULT_TEXT_STEPS))
+                note, *following = lane.upcoming(MAX_STACK)
+                stack = self.stack(following, t)
                 if lane.holding is not None:
-                    states[key] = ("drain", self.drain_pixels(lane.holding, t), True, second)
+                    states[key] = ("drain", self.drain_pixels(lane.holding, t), STACK_SHADES[0], stack, label)
                 elif note is not None and note.head is not None:
-                    states[key] = ("drain", self.drain_pixels(note, t), False, second)
+                    states[key] = ("drain", self.drain_pixels(note, t), None, stack, label)
                 elif note is not None and note.time - self.approach <= t:
-                    states[key] = ("note", self.box_size(note, t), note.snap, note.is_hold, flash, second)
-                elif flash:
-                    states[key] = ("flash", flash)
+                    states[key] = ("note", self.box_size(note, t), note.is_hold, STACK_SHADES[0], stack, label)
+                elif label:
+                    states[key] = ("label", label)
             return states
 
     def box_size(self, note, t):
@@ -352,11 +370,15 @@ class Game:
         # Even steps keep boxes centered and send the device far fewer images
         return round(pixels / SIZE_STEP) * SIZE_STEP
 
-    def overlay(self, note, t):
-        # The next note in the lane, drawn over the current one when their approaches overlap
-        if note is None or note.time - self.approach > t:
-            return None
-        return self.box_size(note, t), note.is_hold
+    def stack(self, notes, t):
+        # Later notes in the lane whose approach has started, drawn in front of the current one.
+        # Shades go by place in the stack, so neighbours never match and a lone note is bright.
+        shown = []
+        for place, note in enumerate(notes, start=1):
+            if note is None or note.time - self.approach > t:
+                break
+            shown.append((self.box_size(note, t), note.is_hold, STACK_SHADES[place % len(STACK_SHADES)]))
+        return tuple(shown)
 
     def drain_pixels(self, note, t):
         remaining = min(1.0, max(0.0, (note.end - t) / (note.end - note.time)))
@@ -373,41 +395,56 @@ class Game:
         kind = state[0] if state else None
         if kind == "unused":
             draw.rectangle((0, 0, s - 1, s - 1), fill=UNUSED_COLOR)
-        elif kind == "flash":
-            draw.rectangle((0, 0, s - 1, s - 1), fill=RESULT_COLORS[state[1]])
         elif kind == "drain":
-            _, filled, held, second = state
+            # A shade of None means the hold was let go and can still be grabbed
+            _, filled, shade, stack, _ = state
             if filled > 0:
-                draw.rectangle((0, s - filled, s - 1, s - 1), fill=HOLD_COLOR if held else LOOSE_HOLD_COLOR)
-            self.draw_second(draw, second)
+                color = LOOSE_HOLD_COLOR if shade is None else note_color(True, shade)
+                draw.rectangle((0, s - filled, s - 1, s - 1), fill=color)
+            self.draw_stack(draw, stack)
         elif kind == "note":
-            _, side, snap, is_hold, flash, second = state
-            color = HOLD_COLOR if is_hold else SNAP_COLORS.get(snap, OTHER_SNAP_COLOR)
-            edge = RESULT_COLORS[flash] if flash else (HOLD_COLOR if is_hold else OUTLINE_COLOR)
-            draw.rectangle((2, 2, s - 3, s - 3), outline=edge, width=4)
-            if side > 0:
-                lo = (s - side) // 2
-                box = (lo, lo, lo + side - 1, lo + side - 1)
-                if is_hold:
-                    draw.rectangle(box, outline=color, width=min(10, side // 2))
-                else:
-                    draw.rectangle(box, fill=color)
-            self.draw_second(draw, second)
+            _, side, is_hold, shade, stack, _ = state
+            self.draw_box(draw, side, note_color(is_hold, shade))
+            self.draw_stack(draw, stack)
+        # Every state that can carry a result keeps it last
+        if kind in ("label", "drain", "note") and state[-1]:
+            image = self.draw_label(image, *state[-1])
         frame = PILHelper.to_native_key_format(self.deck, image)
         self.frame_cache[state] = frame
         return frame
 
-    def draw_second(self, draw, second):
-        if second is None or second[0] <= 0:
+    def draw_label(self, image, result, step):
+        fade = step / RESULT_TEXT_STEPS
+        size = round(self.label_size * (1 - RESULT_TEXT_SHRINK * fade))
+        if size not in self.label_fonts:
+            self.label_fonts[size] = ImageFont.load_default(size=size)
+        alpha = round(255 * (1 - fade))
+        color = MISS_TEXT_COLOR if result == MISS else (255, 255, 255)
+        # Drawn on its own layer so it can fade over whatever the key shows
+        layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        ImageDraw.Draw(layer).text(
+            (self.size / 2, self.size / 2), result, font=self.label_fonts[size], anchor="mm",
+            fill=(*color, alpha), stroke_width=3, stroke_fill=(0, 0, 0, alpha),
+        )
+        return Image.alpha_composite(image.convert("RGBA"), layer).convert("RGB")
+
+    def draw_box(self, draw, side, color):
+        if side <= 0:
             return
-        side, is_hold = second
         lo = (self.size - side) // 2
         hi = lo + side - 1
-        # A hollow frame, so the note being hit stays visible through it
-        draw.rectangle((lo - 2, lo - 2, hi + 2, hi + 2), outline="black", width=2)
-        draw.rectangle((lo, lo, hi, hi), outline=SECOND_HOLD_COLOR if is_hold else SECOND_COLOR, width=min(SECOND_WIDTH, side // 2))
+        radius = round(side * NOTE_CORNER_SHARE)
+        draw.rounded_rectangle((lo, lo, hi, hi), radius=radius, fill=color, outline=NOTE_BORDER_COLOR, width=NOTE_BORDER_WIDTH)
+
+    def draw_stack(self, draw, stack):
+        for side, is_hold, shade in stack:
+            self.draw_box(draw, side, note_color(is_hold, shade))
 
     def on_touch(self, deck, event, value):
+        if self.results_since is not None:
+            if event == TouchscreenEventType.SHORT:
+                self.dismiss_results(time.perf_counter())
+            return
         left, _, right, _ = QUIT_BUTTON
         if event != TouchscreenEventType.SHORT or not left <= value["x"] <= right:
             return
@@ -425,14 +462,20 @@ class Game:
                 return len(self.quit_taps)
             return 0
 
-    def draw_strip(self, text, taps):
-        if (text, taps) == self.strip_sent:
+    def draw_strip(self, result, combo, accuracy, misses, taps):
+        if (result, combo, accuracy, misses, taps) == self.strip_sent:
             return
-        self.strip_sent = (text, taps)
+        self.strip_sent = (result, combo, accuracy, misses, taps)
         image = PILHelper.create_touchscreen_image(self.deck)
         draw = ImageDraw.Draw(image)
         left, top, right, bottom = QUIT_BUTTON
-        draw.text((left / 2, image.height / 2), text, font=self.strip_font, fill="white", anchor="mm")
+        draw.text((left / 2, 32), result, font=self.strip_font, fill=MISS_TEXT_COLOR if result == MISS else "white", anchor="mm")
+        stats = [(f"Combo {combo}", "white"), (f"{accuracy:.2f}%", "white"), (f"Misses {misses}", MISS_TEXT_COLOR)]
+        gap = 36
+        x = left / 2 - (sum(self.stats_font.getlength(text) for text, _ in stats) + gap * (len(stats) - 1)) / 2
+        for text, color in stats:
+            draw.text((x, 76), text, font=self.stats_font, fill=color, anchor="lm")
+            x += self.stats_font.getlength(text) + gap
         draw.rounded_rectangle(QUIT_BUTTON, radius=12, outline=(220, 60, 60), width=3, fill=(70, 15, 15) if taps else "black")
         middle = (left + right) / 2
         draw.text((middle, top + 28), "QUIT", font=self.button_font, fill="white", anchor="mm")
@@ -469,7 +512,8 @@ class Game:
                     pygame.mixer.music.play()
                     playing = True
                 t = self.song_time()
-                if t > last + 1.5:
+                # Keep going until the music itself has finished, not just the notes
+                if t > last + 1.5 and not (playing and pygame.mixer.music.get_busy()):
                     break
                 if self.quit:
                     print("\nQuit from the touch strip.")
@@ -477,13 +521,71 @@ class Game:
                 self.advance(t)
                 self.update_keys(t)
                 with self.lock:
-                    text = f"{self.last_result or 'READY'}   {self.score.combo}x   {self.score.accuracy * 100:.2f}%"
-                self.draw_strip(text, self.recent_taps())
+                    score = self.score
+                    stats = (self.last_result or "READY", score.combo, score.accuracy * 100, score.counts[MISS])
+                self.draw_strip(*stats, self.recent_taps())
                 time.sleep(0.002)
         except KeyboardInterrupt:
             print("\nStopped early.")
         pygame.mixer.music.stop()
         self.run_time = time.perf_counter() - self.start
+
+    def result_tiles(self):
+        """One entry per key, each a list of (label, value) rows; two rows share a key."""
+        score = self.score
+        count = lambda r: (r, str(score.counts[r]))
+        return [
+            [count(PERFECT)], [count(GREAT)], [count(GOOD)], [count(OK), count(MEH)],
+            [count(MISS)], [("MAX COMBO", f"{score.max_combo}/{score.total}")],
+            [("SCORE", f"{score.score:,}")], [("RANK", score.rank), ("ACCURACY", f"{score.accuracy * 100:.2f}%")],
+        ]
+
+    def render_tile(self, rows):
+        image = PILHelper.create_key_image(self.deck)
+        draw = ImageDraw.Draw(image)
+        s = self.size
+        # (label y, value y, biggest value size) for one row or for two
+        layout = [(26, 74, 48)] if len(rows) == 1 else [(16, 40, 30), (72, 96, 30)]
+        for (label, value), (label_y, value_y, size) in zip(rows, layout):
+            draw.text((s / 2, label_y), label, font=self.tile_label_font, fill=TILE_LABEL_COLOR, anchor="mm")
+            while ImageFont.load_default(size=size).getlength(value) > s - 12:
+                size -= 2
+            color = MISS_TEXT_COLOR if label == MISS else "white"
+            draw.text((s / 2, value_y), value, font=ImageFont.load_default(size=size), fill=color, anchor="mm")
+        return PILHelper.to_native_key_format(self.deck, image)
+
+    def show_results(self):
+        """Shows the stats on the keys until a key is pressed or the strip tapped."""
+        with self.deck:
+            for key, rows in enumerate(self.result_tiles()):
+                self.deck.set_key_image(key, self.render_tile(rows))
+            image = PILHelper.create_touchscreen_image(self.deck)
+            draw = ImageDraw.Draw(image)
+            draw.text((image.width / 2, image.height / 2), "Press any key to finish", font=self.strip_font, fill=TILE_LABEL_COLOR, anchor="mm")
+            native = PILHelper.to_native_touchscreen_format(self.deck, image)
+            self.deck.set_touchscreen_image(native, 0, 0, image.width, image.height)
+        self.results_since = time.perf_counter()
+        print("Press any Stream Deck key, or tap the strip, to finish.")
+        try:
+            while not self.results_done:
+                time.sleep(0.05)
+        except KeyboardInterrupt:
+            pass
+
+    def dismiss_results(self, stamp):
+        # Ignore presses right away, so a late tap from the song doesn't skip the stats
+        if stamp - self.results_since >= RESULTS_GRACE:
+            self.results_done = True
+
+
+def approach_for(bpm):
+    if not bpm:
+        return DEFAULT_APPROACH
+    return min(APPROACH_MAX, max(APPROACH_MIN, APPROACH_BEATS * 60 / bpm))
+
+
+def note_color(is_hold, shade):
+    return tuple(round(c * shade) for c in (HOLD_COLOR if is_hold else TAP_COLOR))
 
 
 def is_hit(result):
@@ -548,8 +650,8 @@ def choose_chart():
         if pick.isdigit() and 1 <= int(pick) <= len(playable):
             chart = playable[int(pick) - 1]
             print(f"Loading {chart.label()}")
-            notes, audio = osu.load_chart(chart)
-            return notes, audio, chart.keys, chart.od
+            notes, audio, bpm = osu.load_chart(chart)
+            return notes, audio, chart.keys, chart.od, bpm
 
 
 def main():
@@ -561,7 +663,7 @@ def main():
     parser.add_argument("--seed", type=int, default=1, help="demo only")
     parser.add_argument("--keys", type=int, default=4, choices=range(MIN_LANES, MAX_LANES + 1), help="demo only")
     parser.add_argument("--od", type=float, help="override the chart's OD; lower is more forgiving")
-    parser.add_argument("--approach", type=float, default=0.5, help="seconds a box takes to fill; lower is faster")
+    parser.add_argument("--approach", type=float, help="seconds a box takes to fill; by default it follows the song's BPM")
     parser.add_argument("--easing", choices=EASINGS, default="linear")
     parser.add_argument("--offset", type=float, default=0, help="ms; raise it if you keep hitting late")
     args = parser.parse_args()
@@ -569,11 +671,12 @@ def main():
     if args.demo:
         chart, length = make_demo_chart(args.bpm, args.bars, args.seed, args.easy, args.keys)
         audio = make_demo_audio(chart, args.bpm, length)
-        lanes, od = args.keys, DEMO_OD
+        lanes, od, bpm = args.keys, DEMO_OD, args.bpm
     else:
-        chart, audio, lanes, od = choose_chart()
+        chart, audio, lanes, od, bpm = choose_chart()
     if args.od is not None:
         od = args.od
+    approach = args.approach if args.approach is not None else approach_for(bpm)
 
     pygame.mixer.pre_init(44100, -16, 2, 512)
     pygame.mixer.init()
@@ -584,22 +687,46 @@ def main():
         raise SystemExit("No Stream Deck+ found. Is it plugged in?")
     deck = decks[0]
     deck.open()
+    close_handler = reset_on_console_close(deck)
     try:
         deck.reset()
         deck.set_brightness(80)
         # The library only checks for presses 20 times a second by default
         deck.set_poll_frequency(1000)
-        game = Game(deck, chart, lanes, od, args)
+        game = Game(deck, chart, lanes, od, approach, args)
         deck.set_key_callback(game.on_key)
         deck.set_touchscreen_callback(game.on_touch)
         print(f"{len(chart)} notes. {describe_layout(lanes)}")
         print(describe_windows(od))
+        print(f"Note speed: boxes fill in {approach:.2f} s" + (f" ({bpm:g} BPM)" if bpm else ""))
         game.run(audio)
         print_results(game)
+        game.show_results()
     finally:
-        with deck:
+        reset_deck(deck)
+        del close_handler
+
+
+def reset_deck(deck):
+    with deck:
+        if deck.is_open():
             deck.reset()
             deck.close()
+
+
+def reset_on_console_close(deck):
+    """Resets the deck if the console window is closed, since Windows then skips normal cleanup."""
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
+    def handler(event):
+        if event not in CONSOLE_CLOSE_EVENTS:
+            return False  # Ctrl+C carries on to Python as usual
+        reset_deck(deck)
+        return True
+
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, True)
+    # The caller keeps this alive; a collected callback would crash when Windows calls it
+    return handler
 
 
 if __name__ == "__main__":

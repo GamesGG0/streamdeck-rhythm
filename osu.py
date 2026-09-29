@@ -137,8 +137,23 @@ def snap_of(time_ms, points):
     return 0
 
 
+def main_bpm(points, last_ms):
+    """The BPM that lasts longest before the last note, which is what osu! shows as a map's BPM."""
+    totals = {}
+    for i, (time_ms, beat_length) in enumerate(points):
+        if time_ms > last_ms:
+            break
+        start = 0 if i == 0 else time_ms
+        end = min(points[i + 1][0], last_ms) if i + 1 < len(points) else last_ms
+        key = round(beat_length, 3)
+        totals[key] = totals.get(key, 0) + max(0, end - start)
+    if not totals:
+        return None
+    return round(60000 / max(totals, key=totals.get), 2)
+
+
 def load_chart(info):
-    """Returns (notes, audio_path) with notes as (lane, time, end, snap) in seconds."""
+    """Returns (notes, audio_path, bpm) with notes as (lane, time, end, snap) in seconds."""
     kind, path, extra = info.source
     if kind == "osz":
         with zipfile.ZipFile(path) as package:
@@ -168,7 +183,8 @@ def load_chart(info):
             end = int(fields[5].split(":")[0]) / 1000
         notes.append((lane, time_ms / 1000, end, snap_of(time_ms, points)))
     notes.sort(key=lambda n: n[1])
-    return notes, audio_path
+    last_ms = max((n[2] or n[1] for n in notes), default=0) * 1000
+    return notes, audio_path, main_bpm(points, last_ms)
 
 
 def temp_audio_path(filename):

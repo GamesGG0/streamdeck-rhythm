@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Downloaded separately, see README
+hidapi.dll
+
+# Beatmaps are other people's work; keep them out of the repo
+maps/*
+!maps/.gitkeep
